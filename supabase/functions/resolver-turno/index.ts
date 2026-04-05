@@ -345,15 +345,17 @@ Deno.serve(async (req) => {
           .update({ pozo: nuevoPozo, estado: 'terminada' })
           .eq('id', turno.sala_id);
       } else {
+        // Se bloquea en "resolviendo" hasta que el jugador confirme desde Result.
         await supabase
           .from('salas')
-          .update({ pozo: nuevoPozo, turno_actual: nextOrden })
+          .update({ pozo: nuevoPozo, turno_actual: nextOrden, estado: 'resolviendo' })
           .eq('id', turno.sala_id);
       }
     }
 
     return new Response(
       JSON.stringify({
+        turno_id,
         carta3,
         resultado,
         ganancia,

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { CommonActions } from '@react-navigation/native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { ActionButton } from '@/components/action-button';
 import { ScreenShell } from '@/components/screen-shell';
@@ -15,8 +15,6 @@ type JugadorFinal = {
   id: string;
   nombre: string;
   balance: number;
-  orden?: number;
-  created_at?: string;
 };
 
 export function EndScreen({ navigation, route }: Props) {
@@ -25,93 +23,34 @@ export function EndScreen({ navigation, route }: Props) {
   const [isLoading, setIsLoading] = useState(true);
   const [isRestarting, setIsRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hostId, setHostId] = useState<string | null>(null);
-  const [fallbackHostId, setFallbackHostId] = useState<string | null>(null);
-  const [showInvite, setShowInvite] = useState(false);
-
-  const inviteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const load = async () => {
-      const [{ data: players }, { data: sala }] = await Promise.all([
-        supabase
+      try {
+        const { data: players, error: playersError } = await supabase
           .from('jugadores')
-          .select('id, nombre, balance, orden, created_at')
+          .select('id, nombre, balance')
           .eq('sala_id', salaId)
-          .order('balance', { ascending: false }),
-        supabase.from('salas').select('*').eq('id', salaId).single(),
-      ]);
+          .order('balance', { ascending: false });
 
-      setJugadores(players ?? []);
-      setHostId((sala?.host_id as string | null) ?? null);
+        if (playersError) {
+          throw playersError;
+        }
 
-      if (!sala?.host_id && players?.length) {
-        const sortedByJoin = [...players].sort((a, b) => {
-          const aTime = a.created_at ? new Date(a.created_at).getTime() : Number.MAX_SAFE_INTEGER;
-          const bTime = b.created_at ? new Date(b.created_at).getTime() : Number.MAX_SAFE_INTEGER;
-          return aTime - bTime;
-        });
-        setFallbackHostId(sortedByJoin[0]?.id ?? null);
-      } else {
-        setFallbackHostId(null);
+        setJugadores(players ?? []);
+      } catch {
+        setError('No se pudo cargar el ranking final');
+      } finally {
+        setIsLoading(false);
       }
-
-      setIsLoading(false);
     };
 
     load();
   }, [salaId]);
 
-  const isHost = useMemo(() => {
-    if (!jugadorId) return false;
-    if (hostId) return hostId === jugadorId;
-    return fallbackHostId === jugadorId;
-  }, [fallbackHostId, hostId, jugadorId]);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel(`sala-reinicio-${salaId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'salas',
-          filter: `id=eq.${salaId}`,
-        },
-        (payload) => {
-          const oldSala = payload.old as { estado?: string };
-          const newSala = payload.new as { estado?: string };
-
-          if (!isHost && oldSala.estado === 'terminada' && newSala.estado === 'jugando') {
-            setShowInvite(true);
-            if (inviteTimerRef.current) clearTimeout(inviteTimerRef.current);
-            inviteTimerRef.current = setTimeout(() => {
-              setShowInvite(false);
-              navigation.dispatch(
-                CommonActions.reset({
-                  index: 0,
-                  routes: [{ name: 'Home' }],
-                })
-              );
-            }, 30000);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-      if (inviteTimerRef.current) {
-        clearTimeout(inviteTimerRef.current);
-        inviteTimerRef.current = null;
-      }
-    };
-  }, [isHost, navigation, salaId]);
-
   const winner = jugadores[0];
 
-  const canRestartRound = Boolean(isHost && jugadorId && playerName);
+  const canRestartRound = Boolean(jugadorId && playerName);
 
   const handleRestartRound = async () => {
     if (!jugadorId || !playerName) {
@@ -123,7 +62,7 @@ export function EndScreen({ navigation, route }: Props) {
     setError(null);
 
     try {
-      const { data, error: invokeError } = await supabase.functions.invoke('reiniciar-sala', {
+      const { data, error: invokeError } = await supabase.functions.invoke('nueva-ronda', {
         body: {
           sala_id: salaId,
           jugador_id: jugadorId,
@@ -131,80 +70,39 @@ export function EndScreen({ navigation, route }: Props) {
       });
 
       if (invokeError) {
-        setError(invokeError.message || 'No se pudo reiniciar la ronda');
+        setError(invokeError.message || 'No se pudo crear la nueva ronda');
         setIsRestarting(false);
         return;
       }
 
       if (!data || (typeof data === 'object' && 'error' in data && data.error)) {
         const maybeError = typeof data === 'object' && data && 'error' in data ? String(data.error) : '';
-        setError(maybeError || 'No se pudo reiniciar la ronda');
+        setError(maybeError || 'No se pudo crear la nueva ronda');
         setIsRestarting(false);
         return;
       }
 
-      navigation.replace('Game', {
-        salaId,
-        jugadorId,
+      if (typeof data !== 'object' || !data || !('sala' in data) || !('jugador' in data)) {
+        setError('No se recibio contexto valido para la nueva ronda');
+        setIsRestarting(false);
+        return;
+      }
+
+      navigation.replace('Lobby', {
+        salaId: data.sala.id as string,
+        jugadorId: data.jugador.id as string,
         playerName,
       });
     } catch {
-      setError('Error de conexion al reiniciar la ronda');
+      setError('Error de conexion al crear la nueva ronda');
       setIsRestarting(false);
     }
-  };
-
-  const handleAcceptInvite = () => {
-    if (!jugadorId || !playerName) {
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: 'Home' }],
-        })
-      );
-      return;
-    }
-
-    if (inviteTimerRef.current) {
-      clearTimeout(inviteTimerRef.current);
-      inviteTimerRef.current = null;
-    }
-    setShowInvite(false);
-
-    navigation.replace('Game', {
-      salaId,
-      jugadorId,
-      playerName,
-    });
-  };
-
-  const handleDeclineInvite = () => {
-    if (inviteTimerRef.current) {
-      clearTimeout(inviteTimerRef.current);
-      inviteTimerRef.current = null;
-    }
-    setShowInvite(false);
-    navigation.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [{ name: 'Home' }],
-      })
-    );
   };
 
   return (
     <ScreenShell title="Fin de partida" subtitle="Ranking final por ganancias netas de la partida">
       {isLoading ? (
         <ActivityIndicator color={AppColors.accent} size="large" style={styles.loader} />
-      ) : showInvite ? (
-        <View style={styles.inviteCard}>
-          <Text style={styles.inviteTitle}>El anfitrion quiere jugar otra ronda</Text>
-          <Text style={styles.inviteText}>Tienes 30 segundos para responder.</Text>
-          <View style={styles.actions}>
-            <ActionButton label="ACEPTAR" onPress={handleAcceptInvite} />
-            <ActionButton label="SALIR" onPress={handleDeclineInvite} variant="secondary" />
-          </View>
-        </View>
       ) : (
         <>
           {winner ? (
@@ -236,29 +134,25 @@ export function EndScreen({ navigation, route }: Props) {
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-      {!showInvite ? (
-        <View style={styles.actions}>
-          {isHost ? (
-            <ActionButton
-              label={isRestarting ? 'Reiniciando...' : 'Nueva ronda'}
-              onPress={handleRestartRound}
-              disabled={!canRestartRound || isRestarting}
-              variant="secondary"
-            />
-          ) : null}
-          <ActionButton
-            label="Nueva partida"
-            onPress={() =>
-              navigation.dispatch(
-                CommonActions.reset({
-                  index: 0,
-                  routes: [{ name: 'Home' }],
-                })
-              )
-            }
-          />
-        </View>
-      ) : null}
+      <View style={styles.actions}>
+        <ActionButton
+          label={isRestarting ? 'Creando nueva ronda...' : 'Nueva ronda'}
+          onPress={handleRestartRound}
+          disabled={!canRestartRound || isRestarting}
+          variant="secondary"
+        />
+        <ActionButton
+          label="Nueva partida"
+          onPress={() =>
+            navigation.dispatch(
+              CommonActions.reset({
+                index: 0,
+                routes: [{ name: 'Home' }],
+              })
+            )
+          }
+        />
+      </View>
     </ScreenShell>
   );
 }
@@ -266,21 +160,6 @@ export function EndScreen({ navigation, route }: Props) {
 const styles = StyleSheet.create({
   loader: {
     marginTop: AppSpacing.xl,
-  },
-  inviteCard: {
-    backgroundColor: AppColors.secondary,
-    borderRadius: AppRadius.lg,
-    padding: AppSpacing.lg,
-    gap: AppSpacing.md,
-  },
-  inviteTitle: {
-    color: AppColors.text,
-    fontSize: 24,
-    fontWeight: '800',
-  },
-  inviteText: {
-    color: AppColors.mutedText,
-    fontSize: 14,
   },
   winnerCard: {
     backgroundColor: AppColors.secondary,

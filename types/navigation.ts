@@ -16,6 +16,7 @@ export type RootStackParamList = {
     playerName: string;
     salaId: string;
     jugadorId: string;
+    turnoId: string;
     finPartida: boolean;
     outcome: TurnOutcome;
   };

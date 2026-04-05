@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/action-button';
-import { ScreenShell } from '@/components/screen-shell';
 import { AppColors, AppRadius, AppSpacing } from '@/constants/app-theme';
+import { supabase } from '@/lib/supabase';
 import type { RootStackParamList } from '@/types/navigation';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Result'>;
@@ -23,16 +24,11 @@ function getHeadline(resolution: Props['route']['params']['outcome']['resolution
 }
 
 export function ResultScreen({ navigation, route }: Props) {
-  const { outcome, playerName, salaId, jugadorId, finPartida } = route.params;
+  const { outcome, playerName, salaId, jugadorId, turnoId, finPartida } = route.params;
   const [showThirdCard, setShowThirdCard] = useState(false);
+  const [isContinuing, setIsContinuing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const reveal = useRef(new Animated.Value(0)).current;
-
-  const variation = useMemo(() => {
-    if (outcome.resolution === 'pass') return 0;
-    if (outcome.resolution === 'win') return outcome.betAmount;
-    if (outcome.resolution === 'double-loss') return -(outcome.betAmount * 2);
-    return -outcome.betAmount;
-  }, [outcome.betAmount, outcome.resolution]);
 
   useEffect(() => {
     if (!outcome.cards[2]) return;
@@ -63,26 +59,64 @@ export function ResultScreen({ navigation, route }: Props) {
   const isWin = outcome.resolution === 'win';
   const isLoss = outcome.resolution === 'loss' || outcome.resolution === 'double-loss';
   const thirdCard = outcome.cards[2];
+  const resultColor = isWin ? AppColors.success : isLoss ? '#ff4d4d' : AppColors.warning;
+
+  const handleContinue = async () => {
+    if (finPartida) {
+      navigation.replace('End', { salaId, jugadorId, playerName });
+      return;
+    }
+
+    setIsContinuing(true);
+    setError(null);
+
+    try {
+      const { data, error: invokeError } = await supabase.functions.invoke('confirmar-turno-resultado', {
+        body: {
+          sala_id: salaId,
+          jugador_id: jugadorId,
+          turno_id: turnoId,
+        },
+      });
+
+      if (invokeError) {
+        setError(invokeError.message || 'No se pudo continuar al siguiente turno');
+        setIsContinuing(false);
+        return;
+      }
+
+      if (!data || (typeof data === 'object' && 'error' in data && data.error)) {
+        const maybeError = typeof data === 'object' && data && 'error' in data ? String(data.error) : '';
+        setError(maybeError || 'No se pudo continuar al siguiente turno');
+        setIsContinuing(false);
+        return;
+      }
+
+      navigation.replace('Game', { playerName, salaId, jugadorId });
+    } catch {
+      setError('Error de conexion al continuar');
+      setIsContinuing(false);
+    }
+  };
 
   return (
-    <ScreenShell title="Resultado del turno" subtitle="Resumen de cartas, variacion neta y pozo actualizado">
+    <SafeAreaView style={styles.safe}>
+      <View style={styles.container}>
       <View style={styles.heroCard}>
         <Text style={styles.headline}>{getHeadline(outcome.resolution)}</Text>
-        <Text style={styles.summary}>{outcome.summary}</Text>
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Cartas mostradas</Text>
         {(isWin || isLoss) && outcome.cards[0] && outcome.cards[1] && thirdCard ? (
           <View style={styles.cardRow}>
-            <View key={`${outcome.cards[0].suit}-${outcome.cards[0].value}`} style={styles.playingCard}>
+            <View key={`${outcome.cards[0].suit}-${outcome.cards[0].value}`} style={[styles.playingCard, { borderColor: resultColor }]}>
               <Text style={styles.cardValue}>{outcome.cards[0].value}</Text>
               <Text style={styles.cardSuit}>{outcome.cards[0].suit}</Text>
             </View>
             <Animated.View
               style={[
                 styles.playingCard,
-                styles.thirdCard,
+                { borderColor: resultColor },
                 { opacity: thirdCardOpacity, transform: [{ scale: thirdCardScale }] },
               ]}>
               {showThirdCard ? (
@@ -94,7 +128,7 @@ export function ResultScreen({ navigation, route }: Props) {
                 <Text style={styles.cardBackText}>?</Text>
               )}
             </Animated.View>
-            <View key={`${outcome.cards[1].suit}-${outcome.cards[1].value}`} style={styles.playingCard}>
+            <View key={`${outcome.cards[1].suit}-${outcome.cards[1].value}`} style={[styles.playingCard, { borderColor: resultColor }]}>
               <Text style={styles.cardValue}>{outcome.cards[1].value}</Text>
               <Text style={styles.cardSuit}>{outcome.cards[1].suit}</Text>
             </View>
@@ -104,10 +138,9 @@ export function ResultScreen({ navigation, route }: Props) {
         )}
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Impacto en el pozo</Text>
-        <Text style={styles.infoLine}>Apuesta del turno: ${outcome.betAmount}</Text>
-        <Text style={styles.infoLine}>Pozo despues del turno: ${outcome.potAfterTurn}</Text>
+      <View style={[styles.card, styles.impactCard]}>
+        <Text style={styles.infoLine}>Apuesta: ${outcome.betAmount}</Text>
+        <Text style={styles.infoLine}>Pozo: ${outcome.potAfterTurn}</Text>
         {outcome.resolution === 'win' ? (
           <Text style={[styles.variation, styles.variationPositive]}>Ganancia: +${outcome.betAmount}</Text>
         ) : outcome.resolution === 'loss' ? (
@@ -121,50 +154,46 @@ export function ResultScreen({ navigation, route }: Props) {
         )}
       </View>
 
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
       <View style={styles.actions}>
-        {finPartida ? (
-          <ActionButton
-            label="Ver resultados finales"
-            onPress={() => navigation.replace('End', { salaId, jugadorId, playerName })}
-          />
-        ) : (
-          <ActionButton
-            label="Siguiente turno"
-            onPress={() => navigation.replace('Game', { playerName, salaId, jugadorId })}
-          />
-        )}
+        {isContinuing ? <ActivityIndicator color={AppColors.accent} /> : null}
+        <ActionButton
+          label={finPartida ? 'Ver resultados finales' : 'Siguiente turno'}
+          onPress={handleContinue}
+          disabled={isContinuing}
+        />
       </View>
-    </ScreenShell>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safe: {
+    flex: 1,
+    backgroundColor: AppColors.background,
+  },
+  container: {
+    flex: 1,
+    padding: AppSpacing.lg,
+    gap: AppSpacing.md,
+  },
   heroCard: {
     backgroundColor: AppColors.secondary,
     borderRadius: AppRadius.lg,
-    gap: AppSpacing.sm,
-    padding: AppSpacing.lg,
+    padding: AppSpacing.md,
   },
   headline: {
     color: AppColors.text,
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: '800',
-  },
-  summary: {
-    color: AppColors.mutedText,
-    fontSize: 15,
-    lineHeight: 22,
   },
   card: {
     backgroundColor: AppColors.card,
     borderRadius: AppRadius.lg,
-    gap: AppSpacing.md,
-    padding: AppSpacing.lg,
-  },
-  sectionTitle: {
-    color: AppColors.text,
-    fontSize: 18,
-    fontWeight: '700',
+    gap: AppSpacing.sm,
+    padding: AppSpacing.md,
   },
   cardRow: {
     flexDirection: 'row',
@@ -174,14 +203,11 @@ const styles = StyleSheet.create({
     backgroundColor: AppColors.background,
     borderRadius: AppRadius.md,
     borderWidth: 1,
-    borderColor: AppColors.border,
-    flex: 1,
-    minHeight: 120,
-    padding: AppSpacing.md,
-    justifyContent: 'space-between',
-  },
-  thirdCard: {
     borderColor: AppColors.accent,
+    flex: 1,
+    minHeight: 110,
+    padding: AppSpacing.sm,
+    justifyContent: 'space-between',
   },
   cardBackText: {
     color: AppColors.warning,
@@ -205,6 +231,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
+  impactCard: {
+    gap: AppSpacing.xs,
+  },
   variation: {
     fontSize: 17,
     fontWeight: '800',
@@ -218,5 +247,11 @@ const styles = StyleSheet.create({
   },
   actions: {
     gap: AppSpacing.sm,
+    marginTop: 'auto',
+  },
+  errorText: {
+    color: AppColors.accent,
+    fontSize: 14,
+    textAlign: 'center',
   },
 });

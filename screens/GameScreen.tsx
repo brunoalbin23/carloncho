@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Keyboard, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Keyboard, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/action-button';
@@ -55,6 +55,7 @@ export function GameScreen({ navigation, route }: Props) {
   const [carta2, setCarta2] = useState<SpanishCard | null>(null);
   const [turnoId, setTurnoId] = useState<string | null>(null);
   const [pozo, setPozo] = useState(0);
+  const [estadoSala, setEstadoSala] = useState<'esperando' | 'jugando' | 'resolviendo' | 'terminada'>('jugando');
   const [myBalance, setMyBalance] = useState(0);
   const [turnoActual, setTurnoActual] = useState(-1);
   const [myOrden, setMyOrden] = useState(-1);
@@ -145,6 +146,7 @@ export function GameScreen({ navigation, route }: Props) {
         setMyBalance(me?.balance ?? 0);
         setJugadores(players);
         setPozo(sala.pozo);
+        setEstadoSala(sala.estado as 'esperando' | 'jugando' | 'resolviendo' | 'terminada');
         setTurnoActual(sala.turno_actual);
         setIsLoadingInit(false);
       } catch {
@@ -165,6 +167,7 @@ export function GameScreen({ navigation, route }: Props) {
         (payload) => {
           const updated = payload.new as { pozo: number; turno_actual: number; estado: string };
           setPozo(updated.pozo);
+          setEstadoSala(updated.estado as 'esperando' | 'jugando' | 'resolviendo' | 'terminada');
           setTurnoActual(updated.turno_actual);
           if (updated.estado === 'terminada') {
             navigation.replace('End', { salaId, jugadorId, playerName });
@@ -251,6 +254,7 @@ export function GameScreen({ navigation, route }: Props) {
     }
 
     if (
+      estadoSala === 'jugando' &&
       myOrden === turnoActual &&
       !carta1 &&
       !turnoId &&
@@ -259,7 +263,7 @@ export function GameScreen({ navigation, route }: Props) {
     ) {
       repartirCartas();
     }
-  }, [carta1, isLoadingInit, isLoadingRepartir, myOrden, repartirCartas, turnoActual, turnoId]);
+  }, [carta1, estadoSala, isLoadingInit, isLoadingRepartir, myOrden, repartirCartas, turnoActual, turnoId]);
 
   const handlePass = async () => {
     if (!turnoId || isSubmitting) return;
@@ -346,6 +350,7 @@ export function GameScreen({ navigation, route }: Props) {
         playerName,
         salaId,
         jugadorId,
+        turnoId,
         finPartida: data.fin_partida as boolean,
         outcome: {
           resolution,
@@ -367,6 +372,7 @@ export function GameScreen({ navigation, route }: Props) {
   };
 
   const isMyTurn = myOrden !== -1 && myOrden === turnoActual;
+  const canPlayTurn = isMyTurn && estadoSala === 'jugando';
   const isTurnRevealActive = Boolean(banner);
   const activePlayer = jugadores.find((j) => j.orden === turnoActual);
   const maxBet = pozo;
@@ -417,7 +423,7 @@ export function GameScreen({ navigation, route }: Props) {
             </View>
           ) : null}
 
-          {isMyTurn ? (
+          {canPlayTurn ? (
             isLoadingRepartir ? (
               <ActivityIndicator color={AppColors.accent} size="large" />
             ) : (
@@ -434,7 +440,11 @@ export function GameScreen({ navigation, route }: Props) {
             )
           ) : (
             <View style={styles.waitingCard}>
-              <Text style={styles.waitingText}>Esperando turno de {activePlayer?.nombre ?? '...'}</Text>
+              <Text style={styles.waitingText}>
+                {isMyTurn && estadoSala === 'resolviendo'
+                  ? 'Esperando confirmacion del resultado...'
+                  : `Esperando turno de ${activePlayer?.nombre ?? '...'}`}
+              </Text>
             </View>
           )}
         </View>
@@ -442,7 +452,7 @@ export function GameScreen({ navigation, route }: Props) {
         <View style={styles.bottomZone}>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-          {isMyTurn && !isTurnRevealActive ? (
+          {canPlayTurn && !isTurnRevealActive ? (
             <>
               <View style={styles.betRow}>
                 <TextInput
@@ -490,10 +500,14 @@ export function GameScreen({ navigation, route }: Props) {
                 />
               ) : null}
             </>
-          ) : isMyTurn && isTurnRevealActive ? (
+          ) : canPlayTurn && isTurnRevealActive ? (
             <Text style={styles.waitingSmall}>Mostrando resultado del turno...</Text>
           ) : (
-            <Text style={styles.waitingSmall}>Turno actual: {activePlayer?.nombre ?? '...'}</Text>
+            <Text style={styles.waitingSmall}>
+              {isMyTurn && estadoSala === 'resolviendo'
+                ? 'El jugador anterior debe tocar Siguiente para continuar.'
+                : `Turno actual: ${activePlayer?.nombre ?? '...'}`}
+            </Text>
           )}
         </View>
       </View>
