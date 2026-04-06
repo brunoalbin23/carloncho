@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
 import { ActionButton } from '@/components/action-button';
 import { ScreenShell } from '@/components/screen-shell';
@@ -16,6 +17,7 @@ export function HomeScreen({ navigation }: Props) {
   const [roomCode, setRoomCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toggleWidth, setToggleWidth] = useState(0);
 
   const normalizedPlayerName = playerName.trim();
   const normalizedRoomCode = roomCode.trim().replace(/\D/g, '').slice(0, 6);
@@ -26,6 +28,15 @@ export function HomeScreen({ navigation }: Props) {
   const isCreateMode = mode === 'create';
   const canSubmit = isCreateMode ? canCreateRoom : canJoinRoom;
   const actionLabel = isCreateMode ? 'Crear partida' : 'Unirme a sala';
+  const toggleProgress = useSharedValue(0);
+
+  useEffect(() => {
+    toggleProgress.value = withTiming(isCreateMode ? 0 : 1, { duration: 220 });
+  }, [isCreateMode, toggleProgress]);
+
+  const sliderStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: (toggleWidth / 2) * toggleProgress.value }],
+  }));
 
   const handleCreateRoom = async () => {
     if (!canCreateRoom) {
@@ -117,9 +128,18 @@ export function HomeScreen({ navigation }: Props) {
 
   return (
     <ScreenShell title="" subtitle="">
-      <Text style={styles.logo}>CARLONCHO</Text>
+      <View pointerEvents="none" style={styles.bgPattern}>
+        <View style={[styles.shape, styles.shapeTwo]} />
+        <View style={[styles.shape, styles.shapeThree]} />
+      </View>
+      <Image
+        source={require('../img/inicio.png')}
+        style={styles.heroImg}
+        resizeMode="contain"
+      />
       <View style={styles.formCard}>
-        <View style={styles.toggleWrap}>
+        <View style={styles.toggleWrap} onLayout={(e) => setToggleWidth(e.nativeEvent.layout.width - 8)}>
+          <Animated.View style={[styles.toggleSlider, sliderStyle]} />
           <View style={[styles.togglePill, isCreateMode ? styles.togglePillActive : null]}>
             <Pressable style={styles.toggleBtn} onPress={() => setMode('create')}>
               <Text style={[styles.toggleText, isCreateMode ? styles.toggleTextActive : null]}>Crear</Text>
@@ -175,12 +195,30 @@ export function HomeScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  logo: {
-    color: AppColors.text,
-    fontSize: 52,
-    fontWeight: '900',
-    letterSpacing: 1,
-    textAlign: 'center',
+  bgPattern: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  shape: {
+    position: 'absolute',
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  shapeTwo: {
+    width: 140,
+    height: 140,
+    top: 180,
+    right: -30,
+  },
+  shapeThree: {
+    width: 110,
+    height: 110,
+    bottom: 80,
+    left: 28,
+  },
+  heroImg: {
+    alignSelf: 'center',
+    width: 200,
+    height: 200,
   },
   formCard: {
     backgroundColor: AppColors.card,
@@ -196,6 +234,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: AppSpacing.xs,
     padding: 4,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  toggleSlider: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    width: '50%',
+    height: '84%',
+    backgroundColor: AppColors.accent,
+    borderRadius: AppRadius.pill,
   },
   togglePill: {
     borderRadius: AppRadius.pill,

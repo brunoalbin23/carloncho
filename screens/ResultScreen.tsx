@@ -1,10 +1,21 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated, {
+    useAnimatedStyle,
+    useSharedValue,
+    withDelay,
+    withSequence,
+    withSpring,
+    withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/action-button';
+import { ConfettiRain } from '@/components/ConfettiRain';
+import { SpanishCard } from '@/components/SpanishCard';
 import { AppColors, AppRadius, AppSpacing } from '@/constants/app-theme';
+import { playSound } from '@/lib/sounds';
 import { supabase } from '@/lib/supabase';
 import type { RootStackParamList } from '@/types/navigation';
 
@@ -25,41 +36,65 @@ function getHeadline(resolution: Props['route']['params']['outcome']['resolution
 
 export function ResultScreen({ navigation, route }: Props) {
   const { outcome, playerName, salaId, jugadorId, turnoId, finPartida } = route.params;
-  const [showThirdCard, setShowThirdCard] = useState(false);
   const [isContinuing, setIsContinuing] = useState(false);
+  const [canContinue, setCanContinue] = useState(outcome.resolution !== 'win');
   const [error, setError] = useState<string | null>(null);
-  const reveal = useRef(new Animated.Value(0)).current;
+  const resultY = useSharedValue(-140);
+  const resultScale = useSharedValue(0.8);
+  const resultShake = useSharedValue(0);
+  const [flipFaceDown, setFlipFaceDown] = useState(true);
+  const unlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!outcome.cards[2]) return;
+    resultY.value = withSpring(0, { damping: 16, stiffness: 140 });
+    setFlipFaceDown(true);
 
-    setShowThirdCard(false);
-    reveal.setValue(0);
-    Animated.sequence([
-      Animated.delay(250),
-      Animated.timing(reveal, {
-        toValue: 1,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-    ]).start(() => setShowThirdCard(true));
-  }, [reveal, outcome.cards]);
+    void playSound('card_flip');
+    const flipTimer = setTimeout(() => {
+      setFlipFaceDown(false);
+    }, 220);
 
-  const thirdCardScale = reveal.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.88, 1],
-  });
+    if (outcome.resolution === 'win') {
+      resultScale.value = withSequence(
+        withDelay(200, withTiming(1.12, { duration: 260 })),
+        withTiming(1, { duration: 180 })
+      );
+      void playSound('win');
+      unlockTimerRef.current = setTimeout(() => setCanContinue(true), 1500);
+    } else if (outcome.resolution === 'loss' || outcome.resolution === 'double-loss') {
+      resultShake.value = withSequence(
+        withTiming(-14, { duration: 45 }),
+        withTiming(14, { duration: 45 }),
+        withTiming(-10, { duration: 45 }),
+        withTiming(10, { duration: 45 }),
+        withTiming(0, { duration: 45 })
+      );
+      resultScale.value = withTiming(1, { duration: 220 });
+      void playSound('lose');
+    }
 
-  const thirdCardOpacity = reveal.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.55, 1],
-  });
+    return () => {
+      clearTimeout(flipTimer);
+      if (unlockTimerRef.current) {
+        clearTimeout(unlockTimerRef.current);
+        unlockTimerRef.current = null;
+      }
+    };
+  }, [outcome.resolution, resultScale, resultShake, resultY]);
 
   const isWin = outcome.resolution === 'win';
   const isLoss = outcome.resolution === 'loss' || outcome.resolution === 'double-loss';
   const thirdCard = outcome.cards[2];
-  const resultColor = isWin ? AppColors.success : isLoss ? '#ff4d4d' : AppColors.warning;
+  const tintStyle = isWin ? styles.winTint : isLoss ? styles.lossTint : null;
+  const resultAmount = isWin
+    ? `+$${outcome.betAmount}`
+    : outcome.resolution === 'double-loss'
+      ? `-$${outcome.betAmount * 2}`
+      : `-$${outcome.betAmount}`;
+
+  const resultAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: resultY.value }, { scale: resultScale.value }, { translateX: resultShake.value }],
+  }));
 
   const handleContinue = async () => {
     if (finPartida) {
@@ -101,67 +136,69 @@ export function ResultScreen({ navigation, route }: Props) {
 
   return (
     <SafeAreaView style={styles.safe}>
+      {isWin ? <ConfettiRain count={14} durationMs={2000} /> : null}
       <View style={styles.container}>
-      <View style={styles.heroCard}>
-        <Text style={styles.headline}>{getHeadline(outcome.resolution)}</Text>
-      </View>
+      <Pressable style={[styles.heroCard, tintStyle]} onPress={() => setCanContinue(true)}>
+        <Text style={[styles.headline, isWin ? styles.winText : isLoss ? styles.lossText : null]}>
+          {isWin ? '¡GANASTE!' : isLoss ? 'PERDISTE' : getHeadline(outcome.resolution)}
+        </Text>
+        {(isWin || isLoss) ? (
+          <Image
+            source={isWin ? require('../img/ganoronda.png') : require('../img/perdioronda.png')}
+            style={styles.resultImg}
+            resizeMode="contain"
+          />
+        ) : null}
+        <Text style={[styles.amount, isWin ? styles.winText : styles.lossText]}>{resultAmount}</Text>
+        <Text style={styles.potText}>Pozo actualizado: ${outcome.potAfterTurn}</Text>
+      </Pressable>
 
-      <View style={styles.card}>
-        {(isWin || isLoss) && outcome.cards[0] && outcome.cards[1] && thirdCard ? (
-          <View style={styles.cardRow}>
-            <View key={`${outcome.cards[0].suit}-${outcome.cards[0].value}`} style={[styles.playingCard, { borderColor: resultColor }]}>
-              <Text style={styles.cardValue}>{outcome.cards[0].value}</Text>
-              <Text style={styles.cardSuit}>{outcome.cards[0].suit}</Text>
-            </View>
-            <Animated.View
-              style={[
-                styles.playingCard,
-                { borderColor: resultColor },
-                { opacity: thirdCardOpacity, transform: [{ scale: thirdCardScale }] },
-              ]}>
-              {showThirdCard ? (
-                <>
-                  <Text style={styles.cardValue}>{thirdCard.value}</Text>
-                  <Text style={styles.cardSuit}>{thirdCard.suit}</Text>
-                </>
-              ) : (
-                <Text style={styles.cardBackText}>?</Text>
-              )}
-            </Animated.View>
-            <View key={`${outcome.cards[1].suit}-${outcome.cards[1].value}`} style={[styles.playingCard, { borderColor: resultColor }]}>
-              <Text style={styles.cardValue}>{outcome.cards[1].value}</Text>
-              <Text style={styles.cardSuit}>{outcome.cards[1].suit}</Text>
-            </View>
-          </View>
-        ) : (
+      {isWin && outcome.cards[0] && outcome.cards[1] && thirdCard ? (
+        <View style={styles.cardsWrapWin}>
+          <SpanishCard card={outcome.cards[0]} size={1.02} variant="normal" />
+          <Animated.View style={resultAnimStyle}>
+            <SpanishCard
+              card={thirdCard}
+              size={1.08}
+              variant="highlighted"
+              faceDown={flipFaceDown}
+              animateFlip
+            />
+          </Animated.View>
+          <SpanishCard card={outcome.cards[1]} size={1.02} variant="normal" />
+        </View>
+      ) : isLoss && outcome.cards[0] && outcome.cards[1] && thirdCard ? (
+        <View style={styles.cardsWrapLoss}>
+          <SpanishCard card={outcome.cards[0]} size={1.02} variant="normal" />
+          <Animated.View style={resultAnimStyle}>
+            <SpanishCard
+              card={thirdCard}
+              size={1.14}
+              variant="losing"
+              faceDown={flipFaceDown}
+              animateFlip
+            />
+          </Animated.View>
+          <SpanishCard card={outcome.cards[1]} size={1.02} variant="normal" />
+        </View>
+      ) : (
+        <View style={styles.cardFallback}>
           <Text style={styles.infoLine}>Sin cartas para mostrar en este turno.</Text>
-        )}
-      </View>
+        </View>
+      )}
 
-      <View style={[styles.card, styles.impactCard]}>
-        <Text style={styles.infoLine}>Apuesta: ${outcome.betAmount}</Text>
-        <Text style={styles.infoLine}>Pozo: ${outcome.potAfterTurn}</Text>
-        {outcome.resolution === 'win' ? (
-          <Text style={[styles.variation, styles.variationPositive]}>Ganancia: +${outcome.betAmount}</Text>
-        ) : outcome.resolution === 'loss' ? (
-          <Text style={[styles.variation, styles.variationNegative]}>Perdida: -${outcome.betAmount}</Text>
-        ) : outcome.resolution === 'double-loss' ? (
-          <Text style={[styles.variation, styles.variationNegative]}>
-            Perdida: -${outcome.betAmount * 2}
-          </Text>
-        ) : (
-          <Text style={[styles.variation, styles.infoLine]}>Pasaste el turno</Text>
-        )}
-      </View>
+      {isLoss && outcome.resolution === 'double-loss' ? (
+        <Text style={styles.doubleLossText}>¡CARTA IGUAL! -${outcome.betAmount * 2}</Text>
+      ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       <View style={styles.actions}>
         {isContinuing ? <ActivityIndicator color={AppColors.accent} /> : null}
         <ActionButton
-          label={finPartida ? 'Ver resultados finales' : 'Siguiente turno'}
+          label={finPartida ? 'Ver resultados finales' : canContinue ? 'Siguiente' : 'Siguiente (1.5s)'}
           onPress={handleContinue}
-          disabled={isContinuing}
+          disabled={isContinuing || (!canContinue && !finPartida)}
         />
       </View>
       </View>
@@ -176,82 +213,85 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    padding: AppSpacing.lg,
+    padding: AppSpacing.md,
     gap: AppSpacing.md,
   },
   heroCard: {
     backgroundColor: AppColors.secondary,
     borderRadius: AppRadius.lg,
     padding: AppSpacing.md,
+    alignItems: 'center',
+    gap: 6,
+  },
+  winTint: {
+    backgroundColor: 'rgba(39,174,96,0.22)',
+  },
+  lossTint: {
+    backgroundColor: 'rgba(231,76,60,0.2)',
   },
   headline: {
     color: AppColors.text,
-    fontSize: 30,
-    fontWeight: '800',
-  },
-  card: {
-    backgroundColor: AppColors.card,
-    borderRadius: AppRadius.lg,
-    gap: AppSpacing.sm,
-    padding: AppSpacing.md,
-  },
-  cardRow: {
-    flexDirection: 'row',
-    gap: AppSpacing.sm,
-  },
-  playingCard: {
-    backgroundColor: AppColors.background,
-    borderRadius: AppRadius.md,
-    borderWidth: 1,
-    borderColor: AppColors.accent,
-    flex: 1,
-    minHeight: 110,
-    padding: AppSpacing.sm,
-    justifyContent: 'space-between',
-  },
-  cardBackText: {
-    color: AppColors.warning,
     fontSize: 34,
     fontWeight: '800',
-    textAlign: 'center',
   },
-  cardValue: {
-    color: AppColors.text,
-    fontSize: 28,
+  amount: {
+    fontSize: 34,
     fontWeight: '800',
   },
-  cardSuit: {
-    color: AppColors.accent,
-    fontSize: 16,
-    fontWeight: '700',
-    textTransform: 'capitalize',
+  winText: {
+    color: '#27AE60',
+  },
+  lossText: {
+    color: '#E74C3C',
+  },
+  potText: {
+    color: AppColors.mutedText,
+    fontSize: 13,
+    fontWeight: '400',
+  },
+  resultImg: {
+    width: 88,
+    height: 88,
+  },
+  cardsWrapWin: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    minHeight: 172,
+  },
+  cardsWrapLoss: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    minHeight: 172,
+    gap: 10,
+  },
+  cardFallback: {
+    minHeight: 140,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: AppColors.card,
+    borderRadius: AppRadius.lg,
+    padding: AppSpacing.md,
   },
   infoLine: {
     color: AppColors.mutedText,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 14,
+    fontWeight: '400',
   },
-  impactCard: {
-    gap: AppSpacing.xs,
-  },
-  variation: {
-    fontSize: 17,
+  doubleLossText: {
+    color: '#E74C3C',
+    fontSize: 16,
     fontWeight: '800',
-    marginTop: AppSpacing.xs,
-  },
-  variationPositive: {
-    color: AppColors.success,
-  },
-  variationNegative: {
-    color: '#ff4d4d',
   },
   actions: {
-    gap: AppSpacing.sm,
     marginTop: 'auto',
+    gap: AppSpacing.sm,
   },
   errorText: {
     color: AppColors.accent,
-    fontSize: 14,
+    fontSize: 13,
     textAlign: 'center',
+    fontWeight: '400',
   },
 });

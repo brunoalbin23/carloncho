@@ -1,7 +1,8 @@
 import { CommonActions } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { ActionButton } from '@/components/action-button';
 import { ScreenShell } from '@/components/screen-shell';
@@ -106,10 +107,23 @@ export function EndScreen({ navigation, route }: Props) {
       ) : (
         <>
           {winner ? (
-            <View style={styles.winnerCard}>
-              <Text style={styles.winnerEyebrow}>Ganador</Text>
-              <Text style={styles.winnerName}>{winner.nombre}</Text>
-              <Text style={styles.winnerBalance}>Ganancias netas: ${winner.balance}</Text>
+            <View style={styles.podiumCard}>
+              <Text style={styles.winnerEyebrow}>Podio final</Text>
+              <View style={styles.podiumRow}>
+                <View style={[styles.podiumItem, styles.podiumSecond]}>
+                  <Text style={styles.podiumPlace}>2</Text>
+                  <Text style={styles.podiumName}>{jugadores[1]?.nombre ?? '-'}</Text>
+                </View>
+                <View style={[styles.podiumItem, styles.podiumFirst]}>
+                  <Text style={styles.podiumCrown}>👑</Text>
+                  <Text style={styles.podiumPlace}>1</Text>
+                  <Text style={styles.podiumName}>{winner.nombre}</Text>
+                </View>
+                <View style={[styles.podiumItem, styles.podiumThird]}>
+                  <Text style={styles.podiumPlace}>3</Text>
+                  <Text style={styles.podiumName}>{jugadores[2]?.nombre ?? '-'}</Text>
+                </View>
+              </View>
             </View>
           ) : null}
 
@@ -117,15 +131,36 @@ export function EndScreen({ navigation, route }: Props) {
             <Text style={styles.sectionTitle}>Ranking de ganancias netas</Text>
             <View style={styles.rankingList}>
               {jugadores.map((player, index) => (
-                <View key={player.id} style={styles.rankingRow}>
+                <Animated.View
+                  key={player.id}
+                  style={styles.rankingRow}
+                  entering={FadeInDown.delay(index * 90).duration(280)}>
                   <Text style={styles.position}>{index + 1}</Text>
                   <View style={styles.playerBlock}>
                     <Text style={styles.playerName}>{player.nombre}</Text>
-                    <Text style={styles.playerStack}>
-                      {player.balance >= 0 ? 'Gano' : 'Perdio'} ${Math.abs(player.balance)}
+                    <Text style={[
+                      styles.playerStack,
+                      player.balance > 0 ? styles.stackWin : player.balance < 0 ? styles.stackLoss : null,
+                    ]}>
+                      {player.balance > 0
+                        ? `Gano $${player.balance}`
+                        : player.balance < 0
+                          ? `Perdio $${Math.abs(player.balance)}`
+                          : 'Sin cambios'}
                     </Text>
                   </View>
-                </View>
+                  {player.balance !== 0 ? (
+                    <Image
+                      source={
+                        player.balance > 0
+                          ? require('../img/ganador.png')
+                          : require('../img/perdedor.png')
+                      }
+                      style={styles.resultBadge}
+                      resizeMode="contain"
+                    />
+                  ) : null}
+                </Animated.View>
               ))}
             </View>
           </View>
@@ -161,11 +196,51 @@ const styles = StyleSheet.create({
   loader: {
     marginTop: AppSpacing.xl,
   },
-  winnerCard: {
+  podiumCard: {
     backgroundColor: AppColors.secondary,
     borderRadius: AppRadius.lg,
     gap: AppSpacing.sm,
     padding: AppSpacing.lg,
+  },
+  podiumRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  podiumItem: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: AppColors.background,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    justifyContent: 'center',
+    padding: 8,
+  },
+  podiumFirst: {
+    minHeight: 108,
+    borderColor: '#d4af37',
+  },
+  podiumSecond: {
+    minHeight: 82,
+  },
+  podiumThird: {
+    minHeight: 70,
+  },
+  podiumCrown: {
+    fontSize: 18,
+  },
+  podiumPlace: {
+    color: AppColors.text,
+    fontWeight: '800',
+    fontSize: 16,
+  },
+  podiumName: {
+    color: AppColors.mutedText,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   winnerEyebrow: {
     color: AppColors.warning,
@@ -222,6 +297,19 @@ const styles = StyleSheet.create({
   playerStack: {
     color: AppColors.mutedText,
     fontSize: 14,
+  },
+  stackWin: {
+    color: '#27AE60',
+    fontWeight: '700',
+  },
+  stackLoss: {
+    color: '#E74C3C',
+    fontWeight: '700',
+  },
+  resultBadge: {
+    width: 36,
+    height: 36,
+    marginLeft: 'auto',
   },
   actions: {
     gap: AppSpacing.sm,

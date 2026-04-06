@@ -1,10 +1,12 @@
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
-import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import Animated, { SlideInRight } from 'react-native-reanimated';
 
 import { ActionButton } from '@/components/action-button';
 import { ScreenShell } from '@/components/screen-shell';
 import { AppColors, AppRadius, AppSpacing } from '@/constants/app-theme';
+import { playSound } from '@/lib/sounds';
 import { supabase } from '@/lib/supabase';
 import type { RootStackParamList } from '@/types/navigation';
 
@@ -15,6 +17,16 @@ type Jugador = {
   nombre: string;
   orden: number;
 };
+
+function hashColor(name: string) {
+  const palette = ['#e94560', '#3ddc97', '#6ecbff', '#ffd166', '#ff9f68', '#8e7dff'];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  return palette[Math.abs(hash) % palette.length];
+}
 
 export function LobbyScreen({ navigation, route }: Props) {
   const { salaId, jugadorId, playerName } = route.params;
@@ -182,6 +194,7 @@ export function LobbyScreen({ navigation, route }: Props) {
     setError(null);
 
     try {
+      await playSound('shuffle');
       const { data, error: invokeError } = await supabase.functions.invoke('iniciar-partida', {
         body: JSON.stringify({
           sala_id: salaId,
@@ -239,11 +252,14 @@ export function LobbyScreen({ navigation, route }: Props) {
         ) : (
           <View style={styles.playerList}>
             {players.map((player) => (
-              <View key={player.id} style={styles.playerRow}>
+              <Animated.View key={player.id} style={styles.playerRow} entering={SlideInRight.duration(260)}>
+                <View style={[styles.avatar, { backgroundColor: hashColor(player.nombre) }]}>
+                  <Text style={styles.avatarText}>{player.nombre.slice(0, 1).toUpperCase()}</Text>
+                </View>
                 <View style={styles.playerInfo}>
                   <Text style={styles.playerName}>{player.nombre}</Text>
                 </View>
-              </View>
+              </Animated.View>
             ))}
           </View>
         )}
@@ -327,6 +343,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     padding: AppSpacing.md,
+  },
+  avatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: AppSpacing.sm,
+  },
+  avatarText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: 14,
   },
   playerInfo: {
     flex: 1,

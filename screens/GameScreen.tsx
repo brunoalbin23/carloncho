@@ -1,13 +1,16 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Keyboard, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
+import { ActivityIndicator, AppState, Keyboard, StyleSheet, Text, TextInput, TouchableWithoutFeedback, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionButton } from '@/components/action-button';
+import { SpanishCard } from '@/components/SpanishCard';
 import { AppColors, AppRadius, AppSpacing } from '@/constants/app-theme';
+import { playSound } from '@/lib/sounds';
 import { supabase } from '@/lib/supabase';
-import type { SpanishCard, SpanishCardValue } from '@/types/game';
+import type { SpanishCard as SpanishCardModel, SpanishCardValue } from '@/types/game';
 import type { RootStackParamList } from '@/types/navigation';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Game'>;
@@ -18,26 +21,27 @@ type Jugador = {
   balance: number;
   orden: number;
   activo?: boolean;
+  ausente?: boolean;
 };
 
 type TurnBanner = {
   jugadorNombre: string;
   texto: string;
-  cartas: SpanishCard[];
+  cartas: SpanishCardModel[];
 };
 
-function parseCard(raw: unknown): SpanishCard | null {
+function parseCard(raw: unknown): SpanishCardModel | null {
   if (!raw) return null;
   if (typeof raw === 'object') {
     const value = (raw as { valor?: number }).valor;
-    const suit = (raw as { palo?: SpanishCard['suit'] }).palo;
+    const suit = (raw as { palo?: SpanishCardModel['suit'] }).palo;
     if (typeof value === 'number' && typeof suit === 'string') {
       return { value: value as SpanishCardValue, suit };
     }
   }
   if (typeof raw === 'string') {
     try {
-      const parsed = JSON.parse(raw) as { valor?: number; palo?: SpanishCard['suit'] };
+      const parsed = JSON.parse(raw) as { valor?: number; palo?: SpanishCardModel['suit'] };
       if (typeof parsed.valor === 'number' && typeof parsed.palo === 'string') {
         return { value: parsed.valor as SpanishCardValue, suit: parsed.palo };
       }
@@ -50,13 +54,14 @@ function parseCard(raw: unknown): SpanishCard | null {
 
 export function GameScreen({ navigation, route }: Props) {
   const { salaId, jugadorId, playerName } = route.params;
+  const TURN_TIMEOUT_SECONDS = 45;
 
-  const [carta1, setCarta1] = useState<SpanishCard | null>(null);
-  const [carta2, setCarta2] = useState<SpanishCard | null>(null);
+  const [carta1, setCarta1] = useState<SpanishCardModel | null>(null);
+  const [carta2, setCarta2] = useState<SpanishCardModel | null>(null);
   const [turnoId, setTurnoId] = useState<string | null>(null);
   const [pozo, setPozo] = useState(0);
+  const [displayPozo, setDisplayPozo] = useState(0);
   const [estadoSala, setEstadoSala] = useState<'esperando' | 'jugando' | 'resolviendo' | 'terminada'>('jugando');
-  const [myBalance, setMyBalance] = useState(0);
   const [turnoActual, setTurnoActual] = useState(-1);
   const [myOrden, setMyOrden] = useState(-1);
   const [jugadores, setJugadores] = useState<Jugador[]>([]);
@@ -67,15 +72,89 @@ export function GameScreen({ navigation, route }: Props) {
   const [isBetInputFocused, setIsBetInputFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<TurnBanner | null>(null);
+  const [activeTurnStartedAt, setActiveTurnStartedAt] = useState<number | null>(null);
+  const [secondsRemaining, setSecondsRemaining] = useState<number>(TURN_TIMEOUT_SECONDS);
+  const [endCelebration, setEndCelebration] = useState<{ winnerName: string; winnerBalance: number } | null>(null);
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const dealtForTurnRef = useRef<number | null>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timeoutIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const endNavigationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoPassLockRef = useRef<string | null>(null);
+  const displayPozoRef = useRef(0);
   const playersRef = useRef<Jugador[]>([]);
+  const turnoActualRef = useRef(-1);
+  const estadoSalaRef = useRef<'esperando' | 'jugando' | 'resolviendo' | 'terminada'>('jugando');
 
   useEffect(() => {
     playersRef.current = jugadores;
   }, [jugadores]);
+
+  useEffect(() => {
+    turnoActualRef.current = turnoActual;
+  }, [turnoActual]);
+
+  useEffect(() => {
+    estadoSalaRef.current = estadoSala;
+  }, [estadoSala]);
+
+  const navigateToEndWithCelebration = useCallback(async () => {
+    if (endNavigationTimerRef.current) return;
+
+    let winnerName = 'Un jugador';
+    let winnerBalance = 0;
+
+    try {
+      const { data: winner } = await supabase
+        .from('jugadores')
+        .select('nombre, balance')
+        .eq('sala_id', salaId)
+        .order('balance', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (winner?.nombre) {
+        winnerName = winner.nombre;
+        winnerBalance = Math.max(0, winner.balance ?? 0);
+      }
+    } catch {
+      const localWinner = [...playersRef.current].sort((a, b) => b.balance - a.balance)[0];
+      if (localWinner) {
+        winnerName = localWinner.nombre;
+        winnerBalance = Math.max(0, localWinner.balance);
+      }
+    }
+
+    setEndCelebration({ winnerName, winnerBalance });
+    void playSound('win');
+    endNavigationTimerRef.current = setTimeout(() => {
+      navigation.replace('End', { salaId, jugadorId, playerName });
+    }, 2200);
+  }, [jugadorId, navigation, playerName, salaId]);
+
+  useEffect(() => {
+    const start = displayPozoRef.current;
+    const diff = pozo - start;
+    if (diff === 0) {
+      setDisplayPozo(pozo);
+      return;
+    }
+
+    const steps = 14;
+    let currentStep = 0;
+    const id = setInterval(() => {
+      currentStep += 1;
+      const next = Math.round(start + (diff * currentStep) / steps);
+      displayPozoRef.current = next;
+      setDisplayPozo(next);
+      if (currentStep >= steps) {
+        clearInterval(id);
+      }
+    }, 22);
+
+    return () => clearInterval(id);
+  }, [pozo]);
 
   const repartirCartas = useCallback(async () => {
     if (turnoActual === -1) return;
@@ -107,6 +186,8 @@ export function GameScreen({ navigation, route }: Props) {
       setCarta1({ suit: data.carta1.palo, value: data.carta1.valor as SpanishCardValue });
       setCarta2({ suit: data.carta2.palo, value: data.carta2.valor as SpanishCardValue });
       setTurnoId(data.turno_id);
+      void playSound('card_deal');
+      setActiveTurnStartedAt(Date.now());
     } catch {
       setError('Error de conexion al repartir cartas');
     } finally {
@@ -119,13 +200,41 @@ export function GameScreen({ navigation, route }: Props) {
 
     const init = async () => {
       try {
-        const [{ data: sala }, { data: players }] = await Promise.all([
-          supabase.from('salas').select('pozo, turno_actual, estado').eq('id', salaId).single(),
-          supabase
+        const loadPlayers = async (): Promise<Jugador[] | null> => {
+          const withAusente = await supabase
+            .from('jugadores')
+            .select('id, nombre, balance, orden, activo, ausente')
+            .eq('sala_id', salaId)
+            .order('orden', { ascending: true });
+
+          if (!withAusente.error && withAusente.data) {
+            return withAusente.data as Jugador[];
+          }
+
+          const missingAusente =
+            withAusente.error?.message?.toLowerCase().includes('ausente') ||
+            withAusente.error?.details?.toLowerCase().includes('ausente');
+
+          if (!missingAusente) {
+            return null;
+          }
+
+          const withoutAusente = await supabase
             .from('jugadores')
             .select('id, nombre, balance, orden, activo')
             .eq('sala_id', salaId)
-            .order('orden', { ascending: true }),
+            .order('orden', { ascending: true });
+
+          if (withoutAusente.error || !withoutAusente.data) {
+            return null;
+          }
+
+          return (withoutAusente.data as Jugador[]).map((p) => ({ ...p, ausente: false }));
+        };
+
+        const [{ data: sala }, players] = await Promise.all([
+          supabase.from('salas').select('pozo, turno_actual, estado').eq('id', salaId).single(),
+          loadPlayers(),
         ]);
 
         if (cancelled) return;
@@ -143,11 +252,18 @@ export function GameScreen({ navigation, route }: Props) {
 
         const me = players.find((p) => p.id === jugadorId);
         setMyOrden(me?.orden ?? -1);
-        setMyBalance(me?.balance ?? 0);
         setJugadores(players);
         setPozo(sala.pozo);
         setEstadoSala(sala.estado as 'esperando' | 'jugando' | 'resolviendo' | 'terminada');
         setTurnoActual(sala.turno_actual);
+
+        if (sala.estado === 'jugando' && sala.turno_actual >= 0) {
+          setActiveTurnStartedAt(Date.now());
+          autoPassLockRef.current = null;
+        } else {
+          setActiveTurnStartedAt(null);
+        }
+
         setIsLoadingInit(false);
       } catch {
         if (!cancelled) {
@@ -166,11 +282,26 @@ export function GameScreen({ navigation, route }: Props) {
         { event: 'UPDATE', schema: 'public', table: 'salas', filter: `id=eq.${salaId}` },
         (payload) => {
           const updated = payload.new as { pozo: number; turno_actual: number; estado: string };
+          const nextEstado = updated.estado as 'esperando' | 'jugando' | 'resolviendo' | 'terminada';
+          const previousTurn = turnoActualRef.current;
+          const previousEstado = estadoSalaRef.current;
+
           setPozo(updated.pozo);
-          setEstadoSala(updated.estado as 'esperando' | 'jugando' | 'resolviendo' | 'terminada');
+          setEstadoSala(nextEstado);
           setTurnoActual(updated.turno_actual);
-          if (updated.estado === 'terminada') {
-            navigation.replace('End', { salaId, jugadorId, playerName });
+
+          if (nextEstado === 'jugando' && (previousTurn !== updated.turno_actual || previousEstado !== 'jugando')) {
+            setActiveTurnStartedAt(Date.now());
+            autoPassLockRef.current = null;
+            setEndCelebration(null);
+          }
+
+          if (nextEstado === 'resolviendo') {
+            setActiveTurnStartedAt(null);
+          }
+
+          if (nextEstado === 'terminada') {
+            void navigateToEndWithCelebration();
           }
         }
       )
@@ -180,9 +311,18 @@ export function GameScreen({ navigation, route }: Props) {
         (payload) => {
           const updated = payload.new as Jugador;
           setJugadores((prev) => prev.map((j) => (j.id === updated.id ? { ...j, ...updated } : j)));
-          if (updated.id === jugadorId) {
-            setMyBalance(updated.balance);
-          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'turnos', filter: `sala_id=eq.${salaId}` },
+        (payload) => {
+          const row = payload.new as { jugador_id?: string; creado_en?: string };
+          if (!row.jugador_id) return;
+          const activeNow = playersRef.current.find((p) => p.orden === turnoActualRef.current);
+          if (activeNow && activeNow.id !== row.jugador_id) return;
+          setActiveTurnStartedAt(Date.now());
+          autoPassLockRef.current = null;
         }
       )
       .on(
@@ -211,14 +351,14 @@ export function GameScreen({ navigation, route }: Props) {
           const gananciaAbs = Math.abs(newRow.ganancia ?? 0);
 
           let texto = '';
-          let cartas: SpanishCard[] = [];
+          let cartas: SpanishCardModel[] = [];
 
           if (newRow.resultado === 'gano') {
             texto = `gano $${gananciaAbs}`;
-            cartas = [c1, c3, c2].filter(Boolean) as SpanishCard[];
+            cartas = [c1, c3, c2].filter(Boolean) as SpanishCardModel[];
           } else if (newRow.resultado === 'perdio') {
             texto = `perdio $${gananciaAbs}`;
-            cartas = [c1, c3, c2].filter(Boolean) as SpanishCard[];
+            cartas = [c1, c3, c2].filter(Boolean) as SpanishCardModel[];
           } else {
             texto = 'paso';
           }
@@ -227,6 +367,8 @@ export function GameScreen({ navigation, route }: Props) {
 
           if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
           bannerTimerRef.current = setTimeout(() => setBanner(null), 5000);
+
+          setActiveTurnStartedAt(null);
         }
       )
       .subscribe();
@@ -243,8 +385,40 @@ export function GameScreen({ navigation, route }: Props) {
         clearTimeout(bannerTimerRef.current);
         bannerTimerRef.current = null;
       }
+      if (timeoutIntervalRef.current) {
+        clearInterval(timeoutIntervalRef.current);
+        timeoutIntervalRef.current = null;
+      }
+      if (endNavigationTimerRef.current) {
+        clearTimeout(endNavigationTimerRef.current);
+        endNavigationTimerRef.current = null;
+      }
     };
-  }, [jugadorId, navigation, playerName, salaId]);
+  }, [jugadorId, navigateToEndWithCelebration, navigation, playerName, salaId]);
+
+  useEffect(() => {
+    const onStateChange = async (state: string) => {
+      try {
+        if (state === 'background' || state === 'inactive') {
+          await supabase.from('jugadores').update({ ausente: true }).eq('id', jugadorId);
+        }
+
+        if (state === 'active') {
+          await supabase.from('jugadores').update({ ausente: false }).eq('id', jugadorId);
+        }
+      } catch {
+        // Keep gameplay resilient when ausente column isn't present yet.
+      }
+    };
+
+    const sub = AppState.addEventListener('change', (nextState) => {
+      void onStateChange(nextState);
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [jugadorId]);
 
   useEffect(() => {
     if (isLoadingInit || myOrden === -1 || turnoActual === -1) return;
@@ -265,10 +439,56 @@ export function GameScreen({ navigation, route }: Props) {
     }
   }, [carta1, estadoSala, isLoadingInit, isLoadingRepartir, myOrden, repartirCartas, turnoActual, turnoId]);
 
+  useEffect(() => {
+    if (timeoutIntervalRef.current) {
+      clearInterval(timeoutIntervalRef.current);
+      timeoutIntervalRef.current = null;
+    }
+
+    if (!activeTurnStartedAt) {
+      setSecondsRemaining(TURN_TIMEOUT_SECONDS);
+      autoPassLockRef.current = null;
+      return;
+    }
+
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - activeTurnStartedAt) / 1000);
+      const safeElapsed = Math.max(0, elapsed);
+      const next = Math.max(0, Math.min(TURN_TIMEOUT_SECONDS, TURN_TIMEOUT_SECONDS - safeElapsed));
+      setSecondsRemaining(next);
+    };
+
+    tick();
+    timeoutIntervalRef.current = setInterval(tick, 300);
+
+    return () => {
+      if (timeoutIntervalRef.current) {
+        clearInterval(timeoutIntervalRef.current);
+        timeoutIntervalRef.current = null;
+      }
+    };
+  }, [activeTurnStartedAt]);
+
+  const safeSecondsRemaining = useMemo(() => {
+    if (!Number.isFinite(secondsRemaining)) return TURN_TIMEOUT_SECONDS;
+    return Math.max(0, Math.min(TURN_TIMEOUT_SECONDS, Math.round(secondsRemaining)));
+  }, [secondsRemaining]);
+
+  const isMyTurn = myOrden !== -1 && myOrden === turnoActual;
+  const canPlayTurn = isMyTurn && estadoSala === 'jugando';
+
+  useEffect(() => {
+    if (!canPlayTurn || !turnoId || isSubmitting || safeSecondsRemaining > 0) return;
+    if (autoPassLockRef.current === turnoId) return;
+    autoPassLockRef.current = turnoId;
+    void handlePass();
+  }, [canPlayTurn, isSubmitting, safeSecondsRemaining, turnoId]);
+
   const handlePass = async () => {
     if (!turnoId || isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
+    void playSound('pass');
     try {
       const { data, error: invokeError } = await supabase.functions.invoke('resolver-turno', {
         body: { turno_id: turnoId, jugador_id: jugadorId, apuesta: 0 },
@@ -312,6 +532,7 @@ export function GameScreen({ navigation, route }: Props) {
     }
     setIsSubmitting(true);
     setError(null);
+    void playSound('chip');
 
     try {
       const { data, error: invokeError } = await supabase.functions.invoke('resolver-turno', {
@@ -333,7 +554,7 @@ export function GameScreen({ navigation, route }: Props) {
       }
 
       dealtForTurnRef.current = null;
-      const carta3: SpanishCard = {
+      const carta3: SpanishCardModel = {
         suit: data.carta3.palo,
         value: data.carta3.valor as SpanishCardValue,
       };
@@ -371,16 +592,10 @@ export function GameScreen({ navigation, route }: Props) {
     }
   };
 
-  const isMyTurn = myOrden !== -1 && myOrden === turnoActual;
-  const canPlayTurn = isMyTurn && estadoSala === 'jugando';
   const isTurnRevealActive = Boolean(banner);
   const activePlayer = jugadores.find((j) => j.orden === turnoActual);
   const maxBet = pozo;
-
-  const disconnectedNames = useMemo(
-    () => jugadores.filter((j) => j.activo === false).map((j) => j.nombre),
-    [jugadores]
-  );
+  const progressPct = Math.max(0, Math.min(1, safeSecondsRemaining / TURN_TIMEOUT_SECONDS));
 
   if (isLoadingInit) {
     return (
@@ -399,14 +614,18 @@ export function GameScreen({ navigation, route }: Props) {
         <View style={styles.topZone}>
           <Text style={styles.brandTitle}>CARLONCHO</Text>
           <Text style={styles.potLabel}>Pozo actual</Text>
-          <Text style={styles.potValue}>${pozo}</Text>
-          <Text style={styles.meta}>Tus ganancias netas: ${myBalance}</Text>
-          {disconnectedNames.length > 0 ? (
-            <Text style={styles.disconnected}>Desconectados: {disconnectedNames.join(', ')}</Text>
-          ) : null}
+          <Text style={styles.potValue}>${displayPozo}</Text>
         </View>
 
         <View style={styles.middleZone}>
+          {endCelebration ? (
+            <View style={styles.endCelebrationCard}>
+              <Text style={styles.endCelebrationTitle}>Partida terminada</Text>
+              <Text style={styles.endCelebrationText}>{endCelebration.winnerName} gano el pozo</Text>
+              <Text style={styles.endCelebrationAmount}>${endCelebration.winnerBalance}</Text>
+            </View>
+          ) : null}
+
           {banner ? (
             <View style={styles.banner}>
               <Text style={styles.bannerText}>
@@ -428,14 +647,12 @@ export function GameScreen({ navigation, route }: Props) {
               <ActivityIndicator color={AppColors.accent} size="large" />
             ) : (
               <View style={styles.cardRow}>
-                <View style={styles.playingCard}>
-                  <Text style={styles.cardValue}>{carta1?.value ?? '-'}</Text>
-                  <Text style={styles.cardSuit}>{carta1?.suit ?? ''}</Text>
-                </View>
-                <View style={styles.playingCard}>
-                  <Text style={styles.cardValue}>{carta2?.value ?? '-'}</Text>
-                  <Text style={styles.cardSuit}>{carta2?.suit ?? ''}</Text>
-                </View>
+                <Animated.View entering={FadeInDown.delay(40).duration(320).springify()}>
+                  <SpanishCard card={carta1} size={0.9} />
+                </Animated.View>
+                <Animated.View entering={FadeInDown.delay(180).duration(320).springify()}>
+                  <SpanishCard card={carta2} size={0.9} />
+                </Animated.View>
               </View>
             )
           ) : (
@@ -451,6 +668,15 @@ export function GameScreen({ navigation, route }: Props) {
 
         <View style={styles.bottomZone}>
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+          <View style={styles.timerWrap}>
+            <View style={styles.timerTrack}>
+              <View style={[styles.timerFill, { width: `${progressPct * 100}%` }]} />
+            </View>
+            <Text style={[styles.timerText, safeSecondsRemaining <= 10 ? styles.timerDanger : null]}>
+              {safeSecondsRemaining}s
+            </Text>
+          </View>
 
           {canPlayTurn && !isTurnRevealActive ? (
             <>
@@ -533,15 +759,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   topZone: {
-    flex: 2,
+    flex: 11,
     backgroundColor: AppColors.secondary,
     borderRadius: AppRadius.lg,
-    padding: AppSpacing.md,
+    padding: AppSpacing.sm,
     justifyContent: 'center',
     gap: 2,
   },
   middleZone: {
-    flex: 4,
+    flex: 41,
     backgroundColor: AppColors.card,
     borderRadius: AppRadius.lg,
     padding: AppSpacing.sm,
@@ -549,36 +775,28 @@ const styles = StyleSheet.create({
     gap: AppSpacing.sm,
   },
   bottomZone: {
-    flex: 4,
+    flex: 48,
     backgroundColor: AppColors.card,
     borderRadius: AppRadius.lg,
     padding: AppSpacing.sm,
-    gap: AppSpacing.sm,
+    gap: 8,
     justifyContent: 'center',
   },
   brandTitle: {
     color: AppColors.text,
-    fontSize: 38,
+    fontSize: 30,
     fontWeight: '900',
-    lineHeight: 40,
+    lineHeight: 32,
   },
   potLabel: {
     color: AppColors.mutedText,
-    fontSize: 13,
+    fontSize: 12,
     textTransform: 'uppercase',
   },
   potValue: {
     color: AppColors.text,
-    fontSize: 34,
+    fontSize: 28,
     fontWeight: '900',
-  },
-  meta: {
-    color: AppColors.mutedText,
-    fontSize: 13,
-  },
-  disconnected: {
-    color: AppColors.warning,
-    fontSize: 13,
   },
   banner: {
     backgroundColor: 'rgba(233,69,96,0.12)',
@@ -587,6 +805,33 @@ const styles = StyleSheet.create({
     borderColor: AppColors.accent,
     padding: AppSpacing.sm,
     gap: 6,
+  },
+  endCelebrationCard: {
+    backgroundColor: 'rgba(39,174,96,0.16)',
+    borderRadius: AppRadius.md,
+    borderWidth: 1,
+    borderColor: '#27AE60',
+    padding: AppSpacing.sm,
+    gap: 4,
+    alignItems: 'center',
+  },
+  endCelebrationTitle: {
+    color: '#27AE60',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  endCelebrationText: {
+    color: AppColors.text,
+    fontSize: 15,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  endCelebrationAmount: {
+    color: '#27AE60',
+    fontSize: 26,
+    fontWeight: '900',
   },
   bannerText: {
     color: AppColors.text,
@@ -620,6 +865,8 @@ const styles = StyleSheet.create({
   cardRow: {
     flexDirection: 'row',
     gap: AppSpacing.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   playingCard: {
     flex: 1,
@@ -658,8 +905,36 @@ const styles = StyleSheet.create({
   },
   waitingSmall: {
     color: AppColors.mutedText,
-    fontSize: 13,
+    fontSize: 12,
     textAlign: 'center',
+  },
+  timerWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  timerTrack: {
+    flex: 1,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: AppColors.background,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  timerFill: {
+    height: '100%',
+    backgroundColor: AppColors.success,
+  },
+  timerText: {
+    color: AppColors.mutedText,
+    fontSize: 12,
+    fontWeight: '700',
+    width: 36,
+    textAlign: 'right',
+  },
+  timerDanger: {
+    color: '#E74C3C',
   },
   betRow: {
     flexDirection: 'row',
