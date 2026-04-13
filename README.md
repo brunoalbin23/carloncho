@@ -18,12 +18,14 @@
 
 ### 📱 Demo
 
-![Demo 1](img/demo1.jpeg)
-![Demo 2](img/demo2.jpeg)
-![Demo 3](img/demo3.jpeg)
-![Demo 4](img/demo4.jpeg)
-![Demo 5](img/demo5.jpeg)
-![Demo 6](img/demo6.jpeg)
+<div align="center">
+  <img src="img/demo1.jpeg" width="30%" />
+  <img src="img/demo2.jpeg" width="30%" />
+  <img src="img/demo3.jpeg" width="30%" />
+  <img src="img/demo4.jpeg" width="30%" />
+  <img src="img/demo5.jpeg" width="30%" />
+  <img src="img/demo6.jpeg" width="30%" />
+</div>
 
 ---
 
