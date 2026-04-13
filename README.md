@@ -18,7 +18,12 @@
 
 ### 📱 Demo
 
-> Screenshots and GIF coming soon
+![Demo 1](img/demo1.jpeg)
+![Demo 2](img/demo2.jpeg)
+![Demo 3](img/demo3.jpeg)
+![Demo 4](img/demo4.jpeg)
+![Demo 5](img/demo5.jpeg)
+![Demo 6](img/demo6.jpeg)
 
 ---
 
